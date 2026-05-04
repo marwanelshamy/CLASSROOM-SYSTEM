@@ -1,0 +1,4 @@
+Doctor_ID,Day,Time_Slot,Lecture_ID,Class_ID,Room
+D01,Monday,10:00-12:00,L1,CS101,Hall A
+D01,Wednesday,14:00-16:00,L2,CS101,Hall A
+D02,Tuesday,09:00-11:00,L1,MATH201,Hall B
