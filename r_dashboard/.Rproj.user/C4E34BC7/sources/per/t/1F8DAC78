@@ -3,7 +3,7 @@
     "path": "C:/Users/Hero/classroom_system/r_dashboard/app.r",
     "project_path": "app.r",
     "type": "r_source",
-    "hash": "2245912164",
+    "hash": "537855189",
     "contents": "",
     "dirty": false,
     "created": 1777783895347.0,
@@ -12,15 +12,15 @@
     "properties": {
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "13,34",
+        "cursorPosition": "13,0",
         "scrollLine": "0"
     },
     "folds": "",
-    "lastKnownWriteTime": 1777847977,
+    "lastKnownWriteTime": 1778098744,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1777847977467,
+    "last_content_update": 1778098744,
     "read_only": false,
     "read_only_alternatives": []
 }

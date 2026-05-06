@@ -1,0 +1,23 @@
+Doctor_ID,Name,Username,Password,Subject,Class_ID
+D01,Dr. Ahmed Mohamed,ahmed.mohamed,1234,Computer Science,CS101
+D02,Dr. Sara Ali,sara.ali,1234,Mathematics,MATH201
+D03,Dr. Fatima Hassan,fatima.hassan,1234,Data Structures,CS101
+D04,Dr. Omar Khaled,omar.khaled,1234,Algorithms,CS102
+D05,Dr. Noor Samy,noor.samy,1234,Database Systems,CS103
+D06,Dr. Youssef Adel,youssef.adel,1234,Operating Systems,CS104
+D07,Dr. Mariam Tarek,mariam.tarek,1234,Computer Networks,CS105
+D08,Dr. Hany Mostafa,hany.mostafa,1234,Artificial Intelligence,CS201
+D09,Dr. Salma Nabil,salma.nabil,1234,Machine Learning,CS202
+D10,Dr. Karim Essam,karim.essam,1234,Software Engineering,CS203
+D11,Dr. Reem Fawzy,reem.fawzy,1234,Web Development,CS204
+D12,Dr. Tamer Hegazy,tamer.hegazy,1234,Mobile Development,CS205
+D13,Dr. Dina Magdy,dina.magdy,1234,Cybersecurity,CS206
+D14,Dr. Mostafa Atef,mostafa.atef,1234,Cloud Computing,CS207
+D15,Dr. Heba Salah,heba.salah,1234,Data Science,CS208
+D16,Dr. Wael Ibrahim,wael.ibrahim,1234,Linear Algebra,MATH202
+D17,Dr. Mona Samir,mona.samir,1234,Statistics,MATH203
+D18,Dr. Adel Farouk,adel.farouk,1234,Physics,PHY101
+D19,Dr. Laila Emad,laila.emad,1234,Digital Logic,ECE101
+D20,Dr. Rania Shaker,rania.shaker,1234,Discrete Mathematics,MATH204
+
+

@@ -3,7 +3,7 @@
     "path": "C:/Users/Hero/classroom_system/r_dashboard/ui.r",
     "project_path": "ui.r",
     "type": "r_source",
-    "hash": "2070818512",
+    "hash": "410420916",
     "contents": "",
     "dirty": false,
     "created": 1777784052043.0,
@@ -12,15 +12,15 @@
     "properties": {
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "86,31",
-        "scrollLine": "80"
+        "cursorPosition": "314,56",
+        "scrollLine": "305"
     },
     "folds": "",
-    "lastKnownWriteTime": 1777911822,
+    "lastKnownWriteTime": 1778101474,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1777911822263,
+    "last_content_update": 1778101474,
     "read_only": false,
     "read_only_alternatives": []
 }

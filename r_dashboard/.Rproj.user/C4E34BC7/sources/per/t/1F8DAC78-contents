@@ -1,6 +1,7 @@
 # app.R
 library(shiny)
 library(shinydashboard)
+library(shinyjs)
 library(httr)
 library(jsonlite)
 library(DT)
