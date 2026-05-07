@@ -29,6 +29,7 @@ server <- function(input, output, session) {
     mgmt_doctors     = data.frame(),
     mgmt_courses     = data.frame(),
     analytics_version = 0L,   # increments on session end to force analytics refresh
+    schedule_version  = 0L,   # increments when admin adds a schedule entry
     dark_mode        = TRUE    # TRUE = dark, FALSE = light
   )
 
@@ -212,15 +213,28 @@ server <- function(input, output, session) {
         if (!inherits(res, "try-error") && identical(status_code(res), 200L)) {
           text <- content(res, "text", encoding = "UTF-8")
           parsed <- try(fromJSON(text), silent = TRUE)
-          if (!inherits(parsed, "try-error") && !is.null(parsed)) {
+          if (!inherits(parsed, "try-error") && !is.null(parsed) && length(parsed) > 0) {
             rv$schedule <- as.data.frame(parsed)
           } else {
             rv$schedule <- data.frame()
             output$login_msg <- renderText("✅ Doctor login successful. Schedule data is unavailable right now.")
           }
         } else {
-          rv$schedule <- data.frame()
-          output$login_msg <- renderText("✅ Doctor login successful. Could not load schedule from backend.")
+          # Fallback: read directly from schedule.csv
+          schedule_path <- "C:/Users/Hero/classroom_system/data/schedule.csv"
+          if (file.exists(schedule_path)) {
+            df <- try(read.csv(schedule_path, stringsAsFactors = FALSE), silent = TRUE)
+            if (!inherits(df, "try-error") && nrow(df) > 0 && "Doctor_ID" %in% colnames(df)) {
+              doctor_id_str <- trimws(as.character(match$Doctor_ID[1]))
+              filtered <- df[trimws(as.character(df$Doctor_ID)) == doctor_id_str, , drop = FALSE]
+              rv$schedule <- if (nrow(filtered) > 0) filtered else data.frame()
+            } else {
+              rv$schedule <- data.frame()
+            }
+          } else {
+            rv$schedule <- data.frame()
+          }
+          output$login_msg <- renderText("✅ Doctor login successful. Welcome to Doctor Portal.")
         }
 
         shinydashboard::updateTabItems(session, "tabs", "schedule")
@@ -316,12 +330,101 @@ server <- function(input, output, session) {
              "| Subject:", rv$doctor$Subject))
   })
   
+  # ── Schedule reload helper ───────────────────────
+  reload_schedule <- function() {
+    if (is.null(rv$doctor)) return(FALSE)
+    doctor_id <- trimws(as.character(rv$doctor$Doctor_ID[1]))
+    if (!nzchar(doctor_id)) return(FALSE)
+
+    # Try backend API first
+    res <- try(GET(paste0("http://127.0.0.1:8000/schedule/", doctor_id)), silent = TRUE)
+    if (!inherits(res, "try-error") && status_code(res) == 200L) {
+      text   <- content(res, "text", encoding = "UTF-8")
+      parsed <- try(fromJSON(text), silent = TRUE)
+      if (!inherits(parsed, "try-error") && !is.null(parsed) && length(parsed) > 0) {
+        rv$schedule         <- as.data.frame(parsed)
+        rv$schedule_version <- rv$schedule_version + 1L
+        return(TRUE)
+      }
+    }
+
+    # Fallback: read directly from schedule.csv
+    schedule_path <- "C:/Users/Hero/classroom_system/data/schedule.csv"
+    if (file.exists(schedule_path)) {
+      df <- try(read.csv(schedule_path, stringsAsFactors = FALSE), silent = TRUE)
+      if (!inherits(df, "try-error") && nrow(df) > 0 && "Doctor_ID" %in% colnames(df)) {
+        filtered <- df[trimws(as.character(df$Doctor_ID)) == doctor_id, , drop = FALSE]
+        if (nrow(filtered) > 0) {
+          rv$schedule         <- filtered
+          rv$schedule_version <- rv$schedule_version + 1L
+          return(TRUE)
+        }
+      }
+    }
+
+    rv$schedule <- data.frame()
+    return(FALSE)
+  }
+
+  # Refresh button
+  observeEvent(input$refresh_schedule_btn, {
+    ok <- reload_schedule()
+    output$schedule_refresh_msg <- renderText({
+      if (ok) paste("Schedule updated —", nrow(rv$schedule), "lecture(s) found.")
+      else "No schedule found for this doctor yet."
+    })
+  })
+
+  # Auto-reload whenever doctor navigates to the schedule tab
+  observeEvent(input$tabs, {
+    if (!is.null(input$tabs) && input$tabs == "schedule" &&
+        rv$portal_role == "doctor" && !is.null(rv$doctor)) {
+      reload_schedule()
+    }
+  })
+
   # ── Schedule table ──────────────────────────────
   output$schedule_table <- DT::renderDT({
     req(rv$portal_role == "doctor")
-    req(rv$schedule)
-    if (nrow(rv$schedule) == 0) {
-      return(DT::datatable(data.frame(Message = "No schedule found for this doctor yet."), options = list(dom = "t")))
+    req(rv$doctor)
+
+    # React to schedule_version so table refreshes when admin adds entries
+    rv$schedule_version
+
+    doctor_id <- as.character(rv$doctor$Doctor_ID[1])
+
+    # Try backend API first
+    loaded <- FALSE
+    res <- try(GET(paste0("http://127.0.0.1:8000/schedule/", doctor_id)), silent = TRUE)
+    if (!inherits(res, "try-error") && status_code(res) == 200L) {
+      text   <- content(res, "text", encoding = "UTF-8")
+      parsed <- try(fromJSON(text), silent = TRUE)
+      if (!inherits(parsed, "try-error") && !is.null(parsed) && length(parsed) > 0) {
+        rv$schedule <- as.data.frame(parsed)
+        loaded <- TRUE
+      }
+    }
+
+    # Fallback: read directly from schedule.csv
+    if (!loaded) {
+      schedule_path <- "C:/Users/Hero/classroom_system/data/schedule.csv"
+      if (file.exists(schedule_path)) {
+        df <- try(read.csv(schedule_path, stringsAsFactors = FALSE), silent = TRUE)
+        if (!inherits(df, "try-error") && nrow(df) > 0 && "Doctor_ID" %in% colnames(df)) {
+          filtered <- df[trimws(as.character(df$Doctor_ID)) == trimws(doctor_id), , drop = FALSE]
+          if (nrow(filtered) > 0) {
+            rv$schedule <- filtered
+            loaded <- TRUE
+          }
+        }
+      }
+    }
+
+    if (!loaded || is.null(rv$schedule) || nrow(rv$schedule) == 0) {
+      return(DT::datatable(
+        data.frame(Message = "No schedule found for this doctor yet."),
+        options = list(dom = "t")
+      ))
     }
     DT::datatable(rv$schedule,
                   selection = "single",
@@ -572,7 +675,7 @@ observeEvent(input$start_btn, {
     tryCatch(
       {
         res <- POST(url, query = query_args)
-        if (identical(status_code(res), 200)) {
+        if (status_code(res) == 200L) {
           return(list(ok = TRUE, response = res, error = NULL))
         }
         body_text <- try(content(res, "text", encoding = "UTF-8"), silent = TRUE)
@@ -651,31 +754,48 @@ observeEvent(input$start_btn, {
 
   observeEvent(input$m_add_schedule_btn, {
     req(rv$portal_role == "admin")
+    total_weeks_val <- as.integer(input$m_s_total_weeks)
+    if (is.na(total_weeks_val) || total_weeks_val < 1) total_weeks_val <- 15L
+
     res <- safe_admin_post(
       "http://127.0.0.1:8000/add_schedule_entry",
       list(
-        doctor_id = input$m_s_doctor_id,
-        day = input$m_s_day,
-        time_slot = input$m_s_time,
-        lecture_id = input$m_s_lecture_id,
-        class_id = input$m_s_class_id,
-        room = input$m_s_room,
-        group_id = input$m_s_group_id,
+        doctor_id     = input$m_s_doctor_id,
+        day           = input$m_s_day,
+        time_slot     = input$m_s_time,
+        lecture_id    = input$m_s_lecture_id,
+        class_id      = input$m_s_class_id,
+        room          = input$m_s_room,
+        group_id      = input$m_s_group_id,
         duration_days = input$m_s_duration,
-        course_id = input$m_s_course_id
+        course_id     = input$m_s_course_id,
+        total_weeks   = total_weeks_val
       )
     )
     if (res$ok) {
-      output$m_schedule_msg <- renderText("✅ Schedule entry added successfully.")
-      if (!is.null(rv$doctor)) {
-        res_s <- GET(paste0("http://127.0.0.1:8000/schedule/", rv$doctor$Doctor_ID))
-        rv$schedule <- as.data.frame(fromJSON(content(res_s, "text", encoding = "UTF-8")))
-      }
+      # Also patch Total_Weeks directly in schedule.csv since the API doesn't support it
+      schedule_path <- "C:/Users/Hero/classroom_system/data/schedule.csv"
+      tryCatch({
+        df <- read.csv(schedule_path, stringsAsFactors = FALSE)
+        lid <- trimws(input$m_s_lecture_id)
+        did <- trimws(input$m_s_doctor_id)
+        idx <- which(trimws(as.character(df$Lecture_ID)) == lid &
+                     trimws(as.character(df$Doctor_ID))  == did)
+        if (length(idx) > 0) {
+          df$Total_Weeks[idx] <- total_weeks_val
+          write.csv(df, schedule_path, row.names = FALSE)
+        }
+      }, error = function(e) {})
+
+      output$m_schedule_msg <- renderText(
+        paste0("Schedule entry added — ", total_weeks_val, " weeks.")
+      )
+      rv$schedule_version <- rv$schedule_version + 1L
       refresh_mgmt()
       shinydashboard::updateTabItems(session, "tabs", "management")
     } else {
       err_msg <- if (!is.null(res$error)) paste(":", res$error) else ""
-      output$m_schedule_msg <- renderText(paste0("❌ Failed to add schedule entry", err_msg))
+      output$m_schedule_msg <- renderText(paste0("Failed to add schedule entry", err_msg))
     }
   })
 
@@ -890,6 +1010,74 @@ observeEvent(input$start_btn, {
     df
   }
 
+  # ── Helper: enrich attendance with Doctor Name + Course Name ─────────────
+  enrich_attendance <- function(df) {
+    sessions_path <- "C:/Users/Hero/classroom_system/data/sessions.csv"
+    schedule_path <- "C:/Users/Hero/classroom_system/data/schedule.csv"
+    doctors_path  <- "C:/Users/Hero/classroom_system/data/doctors.csv"
+    courses_path  <- "C:/Users/Hero/classroom_system/data/courses.csv"
+
+    tryCatch({
+      # Load lookup tables
+      sessions_df <- if (file.exists(sessions_path))
+        read.csv(sessions_path, stringsAsFactors = FALSE, header = TRUE) else NULL
+      schedule_df <- if (file.exists(schedule_path))
+        read.csv(schedule_path, stringsAsFactors = FALSE) else NULL
+      doctors_df  <- if (file.exists(doctors_path))
+        read.csv(doctors_path,  stringsAsFactors = FALSE) else NULL
+      courses_df  <- if (file.exists(courses_path))
+        read.csv(courses_path,  stringsAsFactors = FALSE) else NULL
+
+      # Build Session_ID → Lecture_ID + Doctor_ID mapping from sessions.csv
+      if (!is.null(sessions_df) && "Session_ID" %in% colnames(sessions_df)) {
+        # sessions.csv has variable columns — grab only what we need safely
+        sess_cols <- intersect(c("Session_ID","Lecture_ID","Doctor_ID","Class_ID","Week_Number"), colnames(sessions_df))
+        sess_map  <- unique(sessions_df[, sess_cols, drop = FALSE])
+        df <- merge(df, sess_map, by = "Session_ID", all.x = TRUE)
+      }
+
+      # Build Lecture_ID → Course_ID mapping from schedule.csv
+      if (!is.null(schedule_df) && all(c("Lecture_ID","Course_ID") %in% colnames(schedule_df))) {
+        sched_map <- unique(schedule_df[, c("Lecture_ID","Course_ID"), drop = FALSE])
+        if ("Lecture_ID" %in% colnames(df)) {
+          df <- merge(df, sched_map, by = "Lecture_ID", all.x = TRUE)
+        }
+      }
+
+      # Build Doctor_ID → Doctor Name from doctors.csv
+      if (!is.null(doctors_df) && all(c("Doctor_ID","Name") %in% colnames(doctors_df))) {
+        doc_map <- unique(doctors_df[, c("Doctor_ID","Name"), drop = FALSE])
+        names(doc_map)[names(doc_map) == "Name"] <- "Doctor_Name"
+        if ("Doctor_ID" %in% colnames(df)) {
+          df <- merge(df, doc_map, by = "Doctor_ID", all.x = TRUE)
+        }
+      }
+
+      # Build Course_ID → Course Name from courses.csv
+      # Fall back to using Class_ID as the course name if courses.csv doesn't match
+      if (!is.null(courses_df) && all(c("Course_ID","Course_Name") %in% colnames(courses_df))) {
+        crs_map <- unique(courses_df[, c("Course_ID","Course_Name"), drop = FALSE])
+        if ("Course_ID" %in% colnames(df)) {
+          df <- merge(df, crs_map, by = "Course_ID", all.x = TRUE)
+        }
+      }
+
+      # If Course_Name is still missing, use Class_ID as a readable fallback
+      if (!"Course_Name" %in% colnames(df)) {
+        df$Course_Name <- NA_character_
+      }
+      if ("Class_ID" %in% colnames(df)) {
+        df$Course_Name <- ifelse(
+          is.na(df$Course_Name) | !nzchar(trimws(as.character(df$Course_Name))),
+          as.character(df$Class_ID),
+          df$Course_Name
+        )
+      }
+    }, error = function(e) {})  # silently skip enrichment on any error
+
+    df
+  }
+
   output$student_attendance_table <- DT::renderDT({
     req(rv$portal_role == "student")
     req(rv$student)
@@ -905,15 +1093,19 @@ observeEvent(input$start_btn, {
     if (!("Student_ID" %in% colnames(df))) {
       return(DT::datatable(data.frame(Message = "Attendance file format is invalid."), options = list(dom = "t")))
     }
-    keep_cols <- intersect(c("Session_ID", "Time_In", "Status"), colnames(df))
-    if (length(keep_cols) == 0) {
-      return(DT::datatable(data.frame(Message = "Attendance columns are missing in file."), options = list(dom = "t")))
-    }
-    view <- df[as.character(df$Student_ID) == sid, keep_cols, drop = FALSE]
+    view <- df[as.character(df$Student_ID) == sid, , drop = FALSE]
     if (nrow(view) == 0) {
       return(DT::datatable(data.frame(Message = "No attendance records found."), options = list(dom = "t")))
     }
-    DT::datatable(view, options = list(pageLength = 10), rownames = FALSE)
+    # Enrich with Doctor Name + Course Name
+    view <- enrich_attendance(view)
+    # Select display columns — put Doctor_Name and Course_Name first after Session_ID
+    display_cols <- intersect(
+      c("Session_ID", "Week_Number", "Doctor_Name", "Course_Name", "Time_In", "Status"),
+      colnames(view)
+    )
+    DT::datatable(view[, display_cols, drop = FALSE],
+                  options = list(pageLength = 10), rownames = FALSE)
   })
 
   output$student_analytics_table <- DT::renderDT({
@@ -1000,15 +1192,18 @@ observeEvent(input$start_btn, {
     if (!("Student_ID" %in% colnames(df))) {
       return(DT::datatable(data.frame(Message = "Attendance file format is invalid."), options = list(dom = "t")))
     }
-    keep_cols <- intersect(c("Session_ID", "Time_In", "Status"), colnames(df))
-    if (length(keep_cols) == 0) {
-      return(DT::datatable(data.frame(Message = "Attendance columns are missing in file."), options = list(dom = "t")))
-    }
-    view <- df[as.character(df$Student_ID) == sid, keep_cols, drop = FALSE]
+    view <- df[as.character(df$Student_ID) == sid, , drop = FALSE]
     if (nrow(view) == 0) {
       return(DT::datatable(data.frame(Message = "No attendance records found for linked student."), options = list(dom = "t")))
     }
-    DT::datatable(view, options = list(pageLength = 10), rownames = FALSE)
+    # Enrich with Doctor Name + Course Name
+    view <- enrich_attendance(view)
+    display_cols <- intersect(
+      c("Session_ID", "Week_Number", "Doctor_Name", "Course_Name", "Time_In", "Status"),
+      colnames(view)
+    )
+    DT::datatable(view[, display_cols, drop = FALSE],
+                  options = list(pageLength = 10), rownames = FALSE)
   })
 
   output$parent_analytics_table <- DT::renderDT({

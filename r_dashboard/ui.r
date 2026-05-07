@@ -159,6 +159,16 @@ ui <- shinydashboard::dashboardPage(
             title = tags$span(icon("calendar-alt"), " Weekly Schedule"),
             uiOutput("doctor_info"),
             hr(class = "section-divider"),
+            fluidRow(
+              column(width = 2,
+                actionButton("refresh_schedule_btn", "Refresh Schedule",
+                             icon = icon("sync"), class = "btn-info")
+              ),
+              column(width = 10,
+                textOutput("schedule_refresh_msg")
+              )
+            ),
+            br(),
             DT::DTOutput("schedule_table"),
             br(),
             uiOutput("lecture_selector")
@@ -332,6 +342,7 @@ ui <- shinydashboard::dashboardPage(
             textInput("m_s_time", "Time Slot", placeholder = "10:00-12:00"),
             textInput("m_s_room", "Room", placeholder = "Hall A"),
             numericInput("m_s_duration", "Duration (days)", value = 1, min = 1),
+            numericInput("m_s_total_weeks", "Total Weeks", value = 15, min = 1, max = 52),
             actionButton("m_add_schedule_btn", "Add Schedule", class = "btn-success", icon = icon("plus")),
             br(), br(),
             textOutput("m_schedule_msg")

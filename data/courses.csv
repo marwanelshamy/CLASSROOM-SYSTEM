@@ -1,8 +1,21 @@
 Course_ID,Course_Name,Class_ID,Duration_Days
-AI,Introduction to AI,,14
-DS,Data Structures,cs101,14
-DS,Data Structures,CS101,14
-DS,Data Structures,CS101,14
-DS,Data Structures,CS101,14
-CS-AI-01,Data Structures,CS101,14
-
+CS101-CRS,Computer Science I,CS101,1
+MATH201-CRS,Mathematics I,MATH201,1
+CS102-CRS,Computer Science II,CS102,1
+CS103-CRS,Computer Science III,CS103,1
+CS104-CRS,Computer Science IV,CS104,1
+CS105-CRS,Computer Science V,CS105,1
+CS201-CRS,Advanced CS I,CS201,1
+CS202-CRS,Advanced CS II,CS202,1
+CS203-CRS,Advanced CS III,CS203,1
+CS204-CRS,Advanced CS IV,CS204,1
+CS205-CRS,Advanced CS V,CS205,1
+CS206-CRS,Advanced CS VI,CS206,1
+CS207-CRS,Advanced CS VII,CS207,1
+CS208-CRS,Advanced CS VIII,CS208,1
+MATH202-CRS,Mathematics II,MATH202,1
+MATH203-CRS,Mathematics III,MATH203,1
+PHY101-CRS,Physics I,PHY101,1
+ECE101-CRS,Electronics I,ECE101,1
+MATH204-CRS,Mathematics IV,MATH204,1
+ADV,Advanced Statistics,ADV101,1

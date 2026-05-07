@@ -623,10 +623,13 @@ def add_schedule_entry(
     room: str,
     group_id: str = "G1",
     duration_days: int = 1,
-    course_id: str = ""
+    course_id: str = "",
+    total_weeks: int = 15
 ):
     if duration_days < 1:
         raise HTTPException(status_code=400, detail="duration_days must be >= 1")
+    if total_weeks < 1:
+        raise HTTPException(status_code=400, detail="total_weeks must be >= 1")
     required = {
         "doctor_id": doctor_id,
         "day": day,
@@ -639,15 +642,16 @@ def add_schedule_entry(
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required fields: {', '.join(missing)}")
     row = pd.DataFrame([{
-        "Doctor_ID": str(doctor_id).strip(),
-        "Day": str(day).strip(),
-        "Time_Slot": str(time_slot).strip(),
-        "Lecture_ID": str(lecture_id).strip(),
-        "Class_ID": str(class_id).strip(),
-        "Room": str(room).strip(),
-        "Group_ID": str(group_id).strip() or "G1",
+        "Doctor_ID":    str(doctor_id).strip(),
+        "Day":          str(day).strip(),
+        "Time_Slot":    str(time_slot).strip(),
+        "Lecture_ID":   str(lecture_id).strip(),
+        "Class_ID":     str(class_id).strip(),
+        "Room":         str(room).strip(),
+        "Group_ID":     str(group_id).strip() or "G1",
         "Duration_Days": int(duration_days),
-        "Course_ID": str(course_id).strip(),
+        "Course_ID":    str(course_id).strip(),
+        "Total_Weeks":  int(total_weeks),
     }])
     try:
         _ensure_dir(SCHEDULE_PATH)
