@@ -724,22 +724,253 @@ ui <- shinydashboard::dashboardPage(
                          class = "btn-success btn-lg"),
             actionButton("camera_btn", tags$span(icon("camera"), " Start Camera"),
                          class = "btn-info btn-lg"),
+            actionButton("stop_camera_btn", tags$span(icon("video-slash"), " Stop Camera"),
+                         class = "btn-warning btn-lg",
+                         style = "display:none;"),
+            actionButton("snapshot_btn", tags$span(icon("camera-retro"), " Take Snapshot"),
+                         class = "btn-primary btn-lg",
+                         style = "display:none;"),
             actionButton("end_btn", tags$span(icon("stop"), " End Session"),
                          class = "btn-danger btn-lg"),
             hr(class = "section-divider"),
 
             textOutput("session_status"),
             br(),
-            textOutput("camera_status"),
+            uiOutput("camera_status_ui"),
             div(class = "small-note",
               icon("info-circle"),
-              " Start camera 5-10 seconds after starting session.")
+              " Camera runs in-browser and sends frames to the backend automatically.")
           ),
 
           # ── Main panel ──
           shinydashboard::box(
             width = 8, status = "info",
             title = tags$span(icon("users"), " Live Classroom"),
+
+            # ── Embedded camera feed ──
+            tags$div(
+              id = "camera_feed_container",
+              style = "display:none; margin-bottom:16px;",
+              tags$div(
+                style = paste0(
+                  "position:relative; background:#000; border-radius:10px;",
+                  "overflow:hidden; border:2px solid var(--border-strong);",
+                  "width:100%; aspect-ratio:16/9;"
+                ),
+                tags$video(
+                  id = "live_video",
+                  autoplay = NA,
+                  playsinline = NA,
+                  muted = NA,
+                  style = "width:100%; height:100%; display:block; object-fit:cover; position:absolute; top:0; left:0;"
+                ),
+                # Overlay canvas for face boxes
+                tags$canvas(
+                  id = "face_overlay",
+                  style = "position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none;"
+                ),
+                # Overlay: live badge + snapshot flash
+                tags$div(
+                  id = "camera_overlay",
+                  style = paste0(
+                    "position:absolute; top:10px; left:10px;",
+                    "display:flex; gap:8px; align-items:center;"
+                  ),
+                  tags$span(
+                    class = "live-badge",
+                    tags$span(class = "live-dot"),
+                    "LIVE"
+                  )
+                ),
+                tags$div(
+                  id = "snapshot_flash",
+                  style = paste0(
+                    "position:absolute; inset:0; background:white;",
+                    "opacity:0; pointer-events:none;",
+                    "transition:opacity 0.1s ease;"
+                  )
+                )
+              ),
+              # Hidden canvas for frame capture
+              tags$canvas(id = "capture_canvas", style = "display:none;"),
+              # Snapshot result message
+              tags$div(
+                id = "snapshot_msg",
+                style = "font-size:11px; color:var(--success); margin-top:6px; min-height:16px;"
+              )
+            ),
+
+            # Camera JS logic
+            tags$script(HTML("
+              var cameraStream = null;
+              var frameInterval = null;
+              var sessionId = null;
+              var lastRecognized = [];
+
+              // ── Draw face boxes on overlay canvas ──────────
+              function drawFaceBoxes(recognized) {
+                var video   = document.getElementById('live_video');
+                var overlay = document.getElementById('face_overlay');
+                if (!overlay || !video) return;
+
+                // Match canvas pixel size to the video's DISPLAYED size (CSS pixels)
+                var rect = video.getBoundingClientRect();
+                overlay.width  = rect.width  || video.clientWidth  || 640;
+                overlay.height = rect.height || video.clientHeight || 480;
+
+                var ctx = overlay.getContext('2d');
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+                if (!recognized || recognized.length === 0) return;
+
+                // The backend bbox coords are in native video resolution
+                // Scale them to the displayed canvas size
+                var nativeW = video.videoWidth  || overlay.width;
+                var nativeH = video.videoHeight || overlay.height;
+                var scaleX  = overlay.width  / nativeW;
+                var scaleY  = overlay.height / nativeH;
+
+                recognized.forEach(function(person) {
+                  var box = person.bbox || {};
+                  var l = (box.left   || 0) * scaleX;
+                  var t = (box.top    || 0) * scaleY;
+                  var r = (box.right  || 0) * scaleX;
+                  var b = (box.bottom || 0) * scaleY;
+                  var w = r - l;
+                  var h = b - t;
+                  if (w <= 0 || h <= 0) return;
+
+                  var emotion = (person.emotion || 'neutral').toUpperCase();
+                  var name    = person.name || '';
+                  var sid     = person.id   || '';
+                  var label   = sid + '  ' + name + '  ' + emotion;
+
+                  // Green bounding box
+                  ctx.strokeStyle = '#2dd47a';
+                  ctx.lineWidth   = 2.5;
+                  ctx.strokeRect(l, t, w, h);
+
+                  // Corner accent marks
+                  var cs = Math.min(w, h) * 0.18;
+                  ctx.strokeStyle = '#2dd47a';
+                  ctx.lineWidth   = 4;
+                  ctx.beginPath(); ctx.moveTo(l, t+cs); ctx.lineTo(l, t); ctx.lineTo(l+cs, t); ctx.stroke();
+                  ctx.beginPath(); ctx.moveTo(r-cs, t); ctx.lineTo(r, t); ctx.lineTo(r, t+cs); ctx.stroke();
+                  ctx.beginPath(); ctx.moveTo(l, b-cs); ctx.lineTo(l, b); ctx.lineTo(l+cs, b); ctx.stroke();
+                  ctx.beginPath(); ctx.moveTo(r-cs, b); ctx.lineTo(r, b); ctx.lineTo(r, b-cs); ctx.stroke();
+
+                  // Label background + text
+                  ctx.font = 'bold 13px monospace';
+                  var tw = ctx.measureText(label).width;
+                  var lx = l;
+                  var ly = t > 24 ? t - 6 : b + 20;
+                  ctx.fillStyle = 'rgba(13,21,32,0.85)';
+                  ctx.fillRect(lx - 2, ly - 15, tw + 12, 20);
+                  ctx.fillStyle = '#2dd47a';
+                  ctx.fillText(label, lx + 4, ly);
+                });
+              }
+
+              // ── Start camera ────────────────────────────────
+              Shiny.addCustomMessageHandler('startCamera', function(sid) {
+                sessionId = sid;
+                var video     = document.getElementById('live_video');
+                var container = document.getElementById('camera_feed_container');
+
+                navigator.mediaDevices.getUserMedia({
+                  video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+                  audio: false
+                })
+                .then(function(stream) {
+                  cameraStream = stream;
+                  video.srcObject = stream;
+                  container.style.display = 'block';
+                  document.getElementById('stop_camera_btn').style.display = '';
+                  document.getElementById('snapshot_btn').style.display = '';
+                  document.getElementById('camera_btn').style.display = 'none';
+
+                  // Continuously redraw face boxes
+                  (function loop() {
+                    if (lastRecognized.length > 0) drawFaceBoxes(lastRecognized);
+                    requestAnimationFrame(loop);
+                  })();
+
+                  frameInterval = setInterval(function() { sendFrame(false); }, 3000);
+                })
+                .catch(function(err) {
+                  var msg  = err.message || err.name || String(err);
+                  var hint = '';
+                  if (msg.toLowerCase().indexOf('permission') !== -1 ||
+                      msg.toLowerCase().indexOf('denied')     !== -1 ||
+                      err.name === 'NotAllowedError') {
+                    hint = ' — Click the camera icon in your browser address bar, set it to Allow, then try again.';
+                  } else if (err.name === 'NotFoundError') {
+                    hint = ' — No camera found. Please connect a webcam.';
+                  } else if (err.name === 'NotReadableError') {
+                    hint = ' — Camera is in use by another app. Close it and try again.';
+                  }
+                  Shiny.setInputValue('camera_error', msg + hint, {priority: 'event'});
+                });
+              });
+
+              // ── Receive face results from Shiny → draw boxes ─
+              Shiny.addCustomMessageHandler('faceResults', function(data) {
+                lastRecognized = data.recognized || [];
+                drawFaceBoxes(lastRecognized);
+              });
+
+              // ── Stop camera ──────────────────────────────────
+              Shiny.addCustomMessageHandler('stopCamera', function(msg) { stopCameraFeed(); });
+
+              function stopCameraFeed() {
+                if (frameInterval) { clearInterval(frameInterval); frameInterval = null; }
+                if (cameraStream) {
+                  cameraStream.getTracks().forEach(function(t) { t.stop(); });
+                  cameraStream = null;
+                }
+                lastRecognized = [];
+                var overlay = document.getElementById('face_overlay');
+                if (overlay) overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
+                var container = document.getElementById('camera_feed_container');
+                if (container) container.style.display = 'none';
+                document.getElementById('stop_camera_btn').style.display = 'none';
+                document.getElementById('snapshot_btn').style.display = 'none';
+                document.getElementById('camera_btn').style.display = '';
+              }
+
+              // ── Capture & send frame ─────────────────────────
+              function sendFrame(isSnapshot) {
+                if (!sessionId) return;
+                var video  = document.getElementById('live_video');
+                var canvas = document.getElementById('capture_canvas');
+                if (!video || !canvas || video.readyState < 2) return;
+                canvas.width  = video.videoWidth  || 640;
+                canvas.height = video.videoHeight || 480;
+                var ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                var base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+                if (isSnapshot) {
+                  Shiny.setInputValue('snapshot_frame', { data: base64, session_id: sessionId }, {priority: 'event'});
+                  var flash = document.getElementById('snapshot_flash');
+                  flash.style.opacity = '0.7';
+                  setTimeout(function() { flash.style.opacity = '0'; }, 300);
+                } else {
+                  Shiny.setInputValue('camera_frame', { data: base64, session_id: sessionId }, {priority: 'event'});
+                }
+              }
+
+              // ── Button clicks ────────────────────────────────
+              document.addEventListener('click', function(e) {
+                var t = e.target;
+                if (t && (t.id === 'snapshot_btn' || (t.closest && t.closest('#snapshot_btn')))) {
+                  sendFrame(true);
+                }
+                if (t && (t.id === 'stop_camera_btn' || (t.closest && t.closest('#stop_camera_btn')))) {
+                  stopCameraFeed();
+                  Shiny.setInputValue('camera_stopped', Date.now(), {priority: 'event'});
+                }
+              });
+            ")),
 
             # Lecture info boxes
             uiOutput("lecture_details"),
@@ -876,6 +1107,25 @@ ui <- shinydashboard::dashboardPage(
             width = 6, status = "danger",
             title = tags$span(icon("exclamation-triangle"), " Behavior Alerts"),
             plotOutput("behavior_plot", height = "280px")
+          )
+        )
+      ),
+
+      # ══════════════════════════════════════════════
+      # STUDENTS OVERVIEW (DOCTOR)
+      # ══════════════════════════════════════════════
+      shinydashboard::tabItem(tabName = "students_overview",
+        fluidRow(
+          column(width = 12,
+            div(class = "pro-hero",
+              h3(icon("users"), " Class Students"),
+              p("All students in your course — photo, top emotion, and engagement GPA.")
+            )
+          ),
+          shinydashboard::box(
+            width = 12, status = "primary",
+            title = tags$span(icon("id-card"), " Student Cards"),
+            uiOutput("students_overview_ui")
           )
         )
       ),

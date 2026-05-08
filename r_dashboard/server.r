@@ -48,7 +48,8 @@ server <- function(input, output, session) {
         shinydashboard::menuItem("Schedule",         tabName = "schedule",         icon = icon("calendar")),
         shinydashboard::menuItem("Session",          tabName = "session",          icon = icon("video")),
         shinydashboard::menuItem("Emotion Detector", tabName = "emotion_detector", icon = icon("smile")),
-        shinydashboard::menuItem("Analytics",        tabName = "analytics",        icon = icon("chart-bar"))
+        shinydashboard::menuItem("Analytics",        tabName = "analytics",        icon = icon("chart-bar")),
+        shinydashboard::menuItem("Students",         tabName = "students_overview",icon = icon("users"))
       )
     } else if (rv$portal_role == "student") {
       shinydashboard::sidebarMenu(
@@ -813,14 +814,173 @@ observeEvent(input$start_btn, {
     DT::datatable(rv$mgmt_courses, options = list(pageLength = 10))
   })
   
-  # ── Start camera ────────────────────────────────
+  # ── Camera (in-browser) ─────────────────────────
+  output$camera_status_ui <- renderUI({
+    if (is.null(rv$session_id)) return(NULL)
+    div(style = "font-size:12px; color:var(--text-muted);",
+        icon("circle", style="color:var(--success);"), " Camera ready — click Start Camera")
+  })
+
+  # Start camera button → tell browser to open webcam
   observeEvent(input$camera_btn, {
     req(rv$portal_role == "doctor")
     req(rv$session_id)
-    res  <- POST(paste0("http://127.0.0.1:8000/start_camera/", rv$session_id))
-    data <- fromJSON(content(res, "text", encoding = "UTF-8"))
-    output$camera_status <- renderText("📷 Camera started! Recognizing faces...")
-    print("Camera started")
+    session$sendCustomMessage("startCamera", rv$session_id)
+    output$camera_status_ui <- renderUI({
+      div(style = "font-size:12px; color:var(--success);",
+          icon("circle"), " Camera active — sending frames every 3s")
+    })
+  })
+
+  # Stop camera button
+  observeEvent(input$camera_stopped, {
+    output$camera_status_ui <- renderUI({
+      div(style = "font-size:12px; color:var(--text-muted);",
+          icon("circle"), " Camera stopped")
+    })
+  })
+
+  observeEvent(input$camera_error, {
+    output$camera_status_ui <- renderUI({
+      div(
+        div(style = "font-size:12px; color:var(--danger); margin-bottom:6px;",
+            icon("exclamation-circle"), " Camera error: ", input$camera_error),
+        div(style = "font-size:11px; color:var(--text-muted); line-height:1.6;",
+            "To fix: look for the ", tags$b("camera icon"), " in your browser address bar,",
+            " click it, select ", tags$b("Allow"), ", then refresh and try again.", br(),
+            "Or open: ", tags$code("chrome://settings/content/camera"),
+            " and remove 127.0.0.1 from the blocked list."
+        )
+      )
+    })
+  })
+
+  # Receive frame from browser → send to backend for face recognition
+  # Receive frame from browser → send to backend for face recognition + emotion
+  observeEvent(input$camera_frame, {
+    req(rv$session_id)
+    frame_data <- input$camera_frame
+    if (is.null(frame_data$data) || !nzchar(frame_data$data)) return()
+
+    tryCatch({
+      # Decode base64 JPEG and write to temp file
+      raw_bytes <- base64enc::base64decode(frame_data$data)
+      tmp <- tempfile(fileext = ".jpg")
+      writeBin(raw_bytes, tmp)
+      on.exit(unlink(tmp), add = TRUE)
+
+      # POST frame to backend
+      res <- httr::POST(
+        paste0("http://127.0.0.1:8000/process_frame/", rv$session_id),
+        body   = list(file = httr::upload_file(tmp, type = "image/jpeg")),
+        encode = "multipart"
+      )
+
+      if (httr::status_code(res) == 200L) {
+        data <- jsonlite::fromJSON(httr::content(res, "text", encoding = "UTF-8"))
+
+        # Send face boxes back to browser for overlay drawing
+        # Convert to list format so JSON serialization preserves bbox structure
+        recognized_list <- if (!is.null(data$recognized) && length(data$recognized) > 0) {
+          tryCatch({
+            df <- as.data.frame(data$recognized)
+            lapply(seq_len(nrow(df)), function(i) {
+              row <- df[i, ]
+              bbox <- if (!is.null(row$bbox) && is.data.frame(row$bbox)) {
+                list(left=row$bbox$left, top=row$bbox$top,
+                     right=row$bbox$right, bottom=row$bbox$bottom)
+              } else list(left=0, top=0, right=0, bottom=0)
+              list(
+                id      = as.character(row$id),
+                name    = as.character(row$name),
+                emotion = as.character(row$emotion),
+                bbox    = bbox
+              )
+            })
+          }, error = function(e) list())
+        } else list()
+        session$sendCustomMessage("faceResults", list(recognized = recognized_list))
+
+        # Update camera status with recognition info
+        n_faces <- if (!is.null(data$recognized)) length(data$recognized) else 0
+        n_present <- if (!is.null(data$total_present)) data$total_present else 0
+        output$camera_status_ui <- renderUI({
+          div(
+            div(style = "font-size:12px; color:var(--success);",
+                icon("circle"), sprintf(" Camera active — %d face(s) detected, %d present", n_faces, n_present)),
+            if (n_faces == 0)
+              div(style = "font-size:11px; color:var(--text-muted); margin-top:3px;",
+                  "No enrolled faces detected. Make sure students are enrolled.")
+          )
+        })
+
+        # Update attendance
+        total <- data$total_present
+        if (!is.null(total) && total > 0) {
+          att_res <- httr::GET(paste0("http://127.0.0.1:8000/attendance/", rv$session_id))
+          if (httr::status_code(att_res) == 200L) {
+            att_data <- jsonlite::fromJSON(httr::content(att_res, "text", encoding = "UTF-8"))
+            if (!is.null(att_data$records) && length(att_data$records) > 0) {
+              rv$attendance <- as.data.frame(att_data$records)
+            }
+          }
+        }
+
+        # Update emotion stats
+        emo_res <- httr::GET(paste0("http://127.0.0.1:8000/emotion_status/", rv$session_id))
+        if (httr::status_code(emo_res) == 200L) {
+          emo_data <- jsonlite::fromJSON(httr::content(emo_res, "text", encoding = "UTF-8"))
+          if (!is.null(emo_data$records) && length(emo_data$records) > 0) {
+            rv$emotion_live <- as.data.frame(emo_data$records)
+          }
+        }
+
+        # Update absent students
+        abs_res <- httr::GET(paste0("http://127.0.0.1:8000/absent_students/", rv$session_id))
+        if (httr::status_code(abs_res) == 200L) {
+          abs_data <- jsonlite::fromJSON(httr::content(abs_res, "text", encoding = "UTF-8"))
+          if (!is.null(abs_data$records) && length(abs_data$records) > 0) {
+            rv$absent_students <- as.data.frame(abs_data$records)
+          } else {
+            rv$absent_students <- data.frame()
+          }
+        }
+      }
+    }, error = function(e) {
+      message("camera_frame error: ", conditionMessage(e))
+    })
+  })
+
+  # Receive snapshot frame from browser → save via backend
+  observeEvent(input$snapshot_frame, {
+    req(rv$session_id)
+    frame_data <- input$snapshot_frame
+    if (is.null(frame_data$data) || !nzchar(frame_data$data)) return()
+
+    tryCatch({
+      raw_bytes <- base64enc::base64decode(frame_data$data)
+      tmp <- tempfile(fileext = ".jpg")
+      writeBin(raw_bytes, tmp)
+      on.exit(unlink(tmp), add = TRUE)
+
+      res <- httr::POST(
+        paste0("http://127.0.0.1:8000/snapshot/", rv$session_id),
+        query  = list(label = "manual"),
+        body   = list(file = httr::upload_file(tmp, type = "image/jpeg")),
+        encode = "multipart"
+      )
+
+      if (httr::status_code(res) == 200L) {
+        data <- jsonlite::fromJSON(httr::content(res, "text", encoding = "UTF-8"))
+        shinyjs::runjs(sprintf(
+          "document.getElementById('snapshot_msg').textContent = 'Snapshot saved: %s';
+           setTimeout(function(){ document.getElementById('snapshot_msg').textContent=''; }, 4000);",
+          data$filename
+        ))
+      }
+    }, error = function(e) {
+      message("snapshot_frame error: ", conditionMessage(e))
+    })
   })
 
   observeEvent(input$mark_manual_attendance_btn, {
@@ -1598,7 +1758,167 @@ observeEvent(input$start_btn, {
         color = "white"
       )
   })
-  # ── Week progress bar ────────────────────────────
+  # ── Student Overview Cards ───────────────────────
+  output$students_overview_ui <- renderUI({
+    req(rv$portal_role == "doctor")
+    req(rv$doctor)
+
+    # Load students for this doctor's class
+    class_id <- if (!is.null(rv$selected_lecture) && "Class_ID" %in% colnames(rv$selected_lecture))
+      as.character(rv$selected_lecture$Class_ID[1])
+    else if (!is.null(rv$schedule) && nrow(rv$schedule) > 0 && "Class_ID" %in% colnames(rv$schedule))
+      as.character(rv$schedule$Class_ID[1])
+    else ""
+
+    students_path <- "C:/Users/Hero/classroom_system/data/StudentPicsDataset.csv"
+    analytics_path_local <- "C:/Users/Hero/classroom_system/data/session_analytics.csv"
+
+    students_df <- tryCatch(read.csv(students_path, stringsAsFactors = FALSE), error = function(e) NULL)
+    if (is.null(students_df) || nrow(students_df) == 0) {
+      return(div(style = "text-align:center; padding:40px; color:var(--text-muted);",
+                 icon("users"), " No student data available."))
+    }
+
+    # Filter by class if known
+    if (nzchar(class_id) && "Class_ID" %in% colnames(students_df)) {
+      filtered <- students_df[trimws(as.character(students_df$Class_ID)) == trimws(class_id), ]
+      if (nrow(filtered) > 0) students_df <- filtered
+    }
+
+    # Load analytics for top emotion + engagement score per student
+    emotion_map  <- list()
+    gpa_map      <- list()
+    if (file.exists(analytics_path_local)) {
+      an_df <- tryCatch(read.csv(analytics_path_local, stringsAsFactors = FALSE), error = function(e) NULL)
+      if (!is.null(an_df) && nrow(an_df) > 0) {
+        # Filter to this doctor's sessions
+        session_ids <- get_doctor_session_ids()
+        if (length(session_ids) > 0 && "Session_ID" %in% colnames(an_df)) {
+          an_df <- an_df[as.character(an_df$Session_ID) %in% session_ids, , drop = FALSE]
+        }
+        if (nrow(an_df) > 0 && "Student_ID" %in% colnames(an_df)) {
+          for (col in c("happy","neutral","focused","confused","sad")) {
+            if (!col %in% colnames(an_df)) an_df[[col]] <- 0
+            an_df[[col]] <- suppressWarnings(as.integer(an_df[[col]]))
+            an_df[[col]][is.na(an_df[[col]])] <- 0
+          }
+          # Per-student summary
+          summary_df <- an_df %>%
+            group_by(Student_ID) %>%
+            summarise(
+              Avg_Engagement = mean(suppressWarnings(as.numeric(Engagement_Score)), na.rm = TRUE),
+              Happy   = sum(happy,   na.rm = TRUE),
+              Neutral = sum(neutral, na.rm = TRUE),
+              Focused = sum(focused, na.rm = TRUE),
+              Confused= sum(confused,na.rm = TRUE),
+              Sad     = sum(sad,     na.rm = TRUE)
+            )
+          for (i in seq_len(nrow(summary_df))) {
+            sid <- as.character(summary_df$Student_ID[i])
+            counts <- c(
+              happy    = summary_df$Happy[i],
+              neutral  = summary_df$Neutral[i],
+              focused  = summary_df$Focused[i],
+              confused = summary_df$Confused[i],
+              sad      = summary_df$Sad[i]
+            )
+            top_emo <- if (sum(counts) > 0) names(which.max(counts)) else "neutral"
+            emotion_map[[sid]] <- top_emo
+            eng <- summary_df$Avg_Engagement[i]
+            gpa_map[[sid]] <- if (!is.na(eng)) round(eng * 4.0, 2) else NA
+          }
+        }
+      }
+    }
+
+    # Emotion colors
+    emo_colors <- c(
+      happy    = "#2dd47a",
+      neutral  = "#4a90d9",
+      focused  = "#a78bfa",
+      confused = "#f0a500",
+      sad      = "#e05568"
+    )
+
+    # Build cards
+    cards <- lapply(seq_len(nrow(students_df)), function(i) {
+      row     <- students_df[i, ]
+      sid     <- as.character(row$Student_ID)
+      sname   <- as.character(row$Student_Name)
+      photo   <- if ("Photo_Link" %in% colnames(row)) to_photo_embed_url(as.character(row$Photo_Link)) else ""
+      top_emo <- emotion_map[[sid]] %||% "neutral"
+      gpa_val <- gpa_map[[sid]]
+      gpa_txt <- if (!is.null(gpa_val) && !is.na(gpa_val)) paste0("GPA: ", gpa_val, " / 4.0") else "GPA: N/A"
+      emo_col <- emo_colors[[top_emo]] %||% "#4a90d9"
+
+      # Photo element — circle
+      photo_el <- if (nzchar(photo)) {
+        tags$img(src = photo,
+                 style = paste0(
+                   "width:72px; height:72px; border-radius:50%;",
+                   "object-fit:cover; border:3px solid ", emo_col, ";",
+                   "display:block; margin:0 auto 10px;"
+                 ))
+      } else {
+        tags$div(
+          style = paste0(
+            "width:72px; height:72px; border-radius:50%;",
+            "background:var(--bg-input); border:3px solid ", emo_col, ";",
+            "display:flex; align-items:center; justify-content:center;",
+            "margin:0 auto 10px; font-size:22px; color:var(--text-muted);"
+          ),
+          icon("user")
+        )
+      }
+
+      # Emotion pill
+      emo_pill <- tags$span(
+        style = paste0(
+          "display:inline-block; padding:2px 10px; border-radius:20px;",
+          "font-size:10px; font-weight:700; letter-spacing:0.5px;",
+          "background:", emo_col, "22; color:", emo_col, ";",
+          "border:1px solid ", emo_col, "55; text-transform:uppercase;"
+        ),
+        top_emo
+      )
+
+      # Card
+      tags$div(
+        style = paste0(
+          "display:inline-block; width:160px; margin:8px;",
+          "background:var(--bg-card); border:1px solid var(--border);",
+          "border-radius:14px; padding:16px 12px; text-align:center;",
+          "vertical-align:top; transition:transform 0.2s, border-color 0.2s;",
+          "cursor:default;"
+        ),
+        onmouseover = "this.style.transform='translateY(-3px)'; this.style.borderColor='var(--border-strong)';",
+        onmouseout  = "this.style.transform=''; this.style.borderColor='var(--border)';",
+        photo_el,
+        tags$div(
+          style = "font-size:12px; font-weight:600; color:var(--text-head); margin-bottom:4px; line-height:1.3;",
+          sname
+        ),
+        tags$div(
+          style = "font-size:10px; color:var(--text-muted); margin-bottom:6px;",
+          sid
+        ),
+        emo_pill,
+        tags$div(
+          style = "font-size:10px; color:var(--text-dim); margin-top:6px;",
+          gpa_txt
+        )
+      )
+    })
+
+    tagList(
+      div(style = "margin-bottom:12px; color:var(--text-muted); font-size:12px;",
+          icon("users"), sprintf(" %d students", nrow(students_df))),
+      div(style = "line-height:0;", tagList(cards))
+    )
+  })
+
+  # ── `%||%` helper (null coalescing) ─────────────────────────────────────────
+  `%||%` <- function(a, b) if (!is.null(a)) a else b
   output$week_progress_bar <- renderUI({
     if (is.null(rv$selected_lecture) || is.null(rv$doctor)) return(NULL)
     res <- try(GET(paste0(
