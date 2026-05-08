@@ -33,17 +33,13 @@ server <- function(input, output, session) {
     dark_mode        = TRUE    # TRUE = dark, FALSE = light
   )
 
+  # ── Sidebar menu (role-based) ────────────────────
   output$sidebar_menu <- shinydashboard::renderMenu({
     if (rv$portal_role == "admin") {
       shinydashboard::sidebarMenu(
         id = "tabs",
         selected = "management",
-        shinydashboard::menuItem("Login", tabName = "login", icon = icon("sign-in-alt")),
-        shinydashboard::menuItem("Management", tabName = "management", icon = icon("user-cog")),
-        tags$li(class = "sidebar-footer-btns",
-          actionButton("theme_toggle", uiOutput("theme_icon"), class = "btn-theme-toggle"),
-          actionButton("logout_btn", "Logout", icon = icon("sign-out-alt"), class = "btn-logout")
-        )
+        shinydashboard::menuItem("Management", tabName = "management", icon = icon("cog"))
       )
     } else if (rv$portal_role == "doctor") {
       shinydashboard::sidebarMenu(
@@ -52,40 +48,25 @@ server <- function(input, output, session) {
         shinydashboard::menuItem("Schedule",         tabName = "schedule",         icon = icon("calendar")),
         shinydashboard::menuItem("Session",          tabName = "session",          icon = icon("video")),
         shinydashboard::menuItem("Emotion Detector", tabName = "emotion_detector", icon = icon("smile")),
-        shinydashboard::menuItem("Analytics",        tabName = "analytics",        icon = icon("chart-bar")),
-        tags$li(class = "sidebar-footer-btns",
-          actionButton("theme_toggle", uiOutput("theme_icon"), class = "btn-theme-toggle"),
-          actionButton("logout_btn", "Logout", icon = icon("sign-out-alt"), class = "btn-logout")
-        )
+        shinydashboard::menuItem("Analytics",        tabName = "analytics",        icon = icon("chart-bar"))
       )
     } else if (rv$portal_role == "student") {
       shinydashboard::sidebarMenu(
         id = "tabs",
         selected = "student_portal",
-        shinydashboard::menuItem("Student Portal", tabName = "student_portal", icon = icon("user-graduate")),
-        tags$li(class = "sidebar-footer-btns",
-          actionButton("theme_toggle", uiOutput("theme_icon"), class = "btn-theme-toggle"),
-          actionButton("logout_btn", "Logout", icon = icon("sign-out-alt"), class = "btn-logout")
-        )
+        shinydashboard::menuItem("Student Portal", tabName = "student_portal", icon = icon("user-graduate"))
       )
     } else if (rv$portal_role == "parent") {
       shinydashboard::sidebarMenu(
         id = "tabs",
         selected = "parent_portal",
-        shinydashboard::menuItem("Parent Portal", tabName = "parent_portal", icon = icon("users")),
-        tags$li(class = "sidebar-footer-btns",
-          actionButton("theme_toggle", uiOutput("theme_icon"), class = "btn-theme-toggle"),
-          actionButton("logout_btn", "Logout", icon = icon("sign-out-alt"), class = "btn-logout")
-        )
+        shinydashboard::menuItem("Parent Portal", tabName = "parent_portal", icon = icon("users"))
       )
     } else {
       shinydashboard::sidebarMenu(
         id = "tabs",
         selected = "login",
-        shinydashboard::menuItem("Login", tabName = "login", icon = icon("sign-in-alt")),
-        tags$li(class = "sidebar-footer-btns",
-          actionButton("theme_toggle", uiOutput("theme_icon"), class = "btn-theme-toggle")
-        )
+        shinydashboard::menuItem("Login", tabName = "login", icon = icon("sign-in-alt"))
       )
     }
   })
@@ -305,21 +286,38 @@ server <- function(input, output, session) {
   })
 
   # ── Dark / Light mode toggle ─────────────────────
-  observeEvent(input$theme_toggle, {
+  observeEvent(input$theme_toggle_btn, {
     rv$dark_mode <- !rv$dark_mode
-    if (rv$dark_mode) {
-      shinyjs::runjs("document.body.setAttribute('data-theme','dark');")
-    } else {
-      shinyjs::runjs("document.body.setAttribute('data-theme','light');")
-    }
+    theme <- if (rv$dark_mode) "dark" else "light"
+    session$sendCustomMessage("setTheme", theme)
   })
 
-  output$theme_icon <- renderUI({
-    if (isTRUE(rv$dark_mode)) {
-      tags$span(icon("sun"), " Light Mode")
-    } else {
-      tags$span(icon("moon"), " Dark Mode")
-    }
+  # ── Login state for conditionalPanel ────────────
+  output$is_logged_in <- reactive({
+    rv$portal_role != "guest"
+  })
+  outputOptions(output, "is_logged_in", suspendWhenHidden = FALSE)
+
+  # ── Header user badge ────────────────────────────
+  output$header_user_badge <- renderUI({
+    if (rv$portal_role == "guest") return(NULL)
+    name <- switch(rv$portal_role,
+      "doctor"  = if (!is.null(rv$doctor))  as.character(rv$doctor$Name[1])  else "Doctor",
+      "student" = if (!is.null(rv$student)) as.character(rv$student$Student_Name[1]) else "Student",
+      "parent"  = if (!is.null(rv$parent))  paste("Parent") else "Parent",
+      "admin"   = "Admin",
+      ""
+    )
+    initials <- paste0(
+      toupper(substr(strsplit(name, " ")[[1]], 1, 1)),
+      collapse = ""
+    )
+    initials <- substr(initials, 1, 2)
+    tags$div(
+      class = "user-badge",
+      tags$div(class = "user-avatar", initials),
+      tags$span(name, style = "max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;")
+    )
   })
 
   # ── Doctor info ─────────────────────────────────
@@ -1600,6 +1598,151 @@ observeEvent(input$start_btn, {
         color = "white"
       )
   })
+  # ── Week progress bar ────────────────────────────
+  output$week_progress_bar <- renderUI({
+    if (is.null(rv$selected_lecture) || is.null(rv$doctor)) return(NULL)
+    res <- try(GET(paste0(
+      "http://127.0.0.1:8000/completed_weeks/",
+      rv$doctor$Doctor_ID, "/",
+      rv$selected_lecture$Lecture_ID
+    )), silent = TRUE)
+    if (inherits(res, "try-error")) return(NULL)
+    data      <- try(fromJSON(content(res, "text", encoding = "UTF-8")), silent = TRUE)
+    if (inherits(data, "try-error")) return(NULL)
+    completed <- length(data$completed_weeks)
+    total     <- 15
+    pct       <- round(completed / total * 100)
+    tagList(
+      p(paste("Completed:", completed, "of", total, "weeks"),
+        style = "color:var(--text-muted); font-size:11px; margin-bottom:4px;"),
+      tags$div(class = "week-track",
+        tags$div(class = "week-fill", style = paste0("width:", pct, "%;"))
+      ),
+      p(paste0(pct, "% complete"),
+        style = "color:var(--accent); font-size:10px; margin-top:3px;")
+    )
+  })
+
+  output$week_info <- renderText({
+    req(input$week_number)
+    paste("Week", input$week_number, "of 15")
+  })
+
+  # ── Weekly attendance plot ────────────────────────
+  output$weekly_attendance_plot <- renderPlot({
+    req(rv$portal_role == "doctor")
+    sessions_path <- "C:/Users/Hero/classroom_system/data/sessions.csv"
+    att_path      <- "C:/Users/Hero/classroom_system/data/attendance.csv"
+    if (!file.exists(sessions_path) || !file.exists(att_path)) {
+      return(ggplot() + annotate("text", x=0.5, y=0.5,
+        label="No session data yet.", size=5, color="#7a9bb5", hjust=0.5) + theme_void())
+    }
+    sessions_df <- try(read.csv(sessions_path, stringsAsFactors=FALSE), silent=TRUE)
+    att_df      <- try(read.csv(att_path,      stringsAsFactors=FALSE), silent=TRUE)
+    if (inherits(sessions_df,"try-error") || inherits(att_df,"try-error")) {
+      return(ggplot() + annotate("text", x=0.5, y=0.5,
+        label="Error reading data.", size=5, color="#e05555", hjust=0.5) + theme_void())
+    }
+    if (!is.null(rv$doctor) && "Doctor_ID" %in% colnames(sessions_df)) {
+      did <- trimws(as.character(rv$doctor$Doctor_ID[1]))
+      sessions_df <- sessions_df[trimws(as.character(sessions_df$Doctor_ID)) == did, , drop=FALSE]
+    }
+    if (nrow(sessions_df) == 0 || !"Week_Number" %in% colnames(sessions_df)) {
+      return(ggplot() + annotate("text", x=0.5, y=0.5,
+        label="No sessions recorded yet.", size=5, color="#7a9bb5", hjust=0.5) + theme_void())
+    }
+    if (!"Session_ID" %in% colnames(att_df) || nrow(att_df) == 0) {
+      return(ggplot() + annotate("text", x=0.5, y=0.5,
+        label="No attendance records yet.", size=5, color="#7a9bb5", hjust=0.5) + theme_void())
+    }
+    merged <- merge(
+      sessions_df[, intersect(c("Session_ID","Week_Number"), colnames(sessions_df))],
+      att_df, by="Session_ID", all.x=FALSE
+    )
+    if (nrow(merged) == 0) {
+      return(ggplot() + annotate("text", x=0.5, y=0.5,
+        label="No matched attendance data.", size=5, color="#7a9bb5", hjust=0.5) + theme_void())
+    }
+    student_col <- if ("Student_ID" %in% colnames(merged)) "Student_ID" else colnames(merged)[1]
+    weekly <- merged %>%
+      group_by(Week_Number) %>%
+      summarise(Present = n_distinct(.data[[student_col]], na.rm=TRUE)) %>%
+      arrange(Week_Number) %>%
+      right_join(data.frame(Week_Number=1:15), by="Week_Number") %>%
+      mutate(Present = ifelse(is.na(Present), 0, Present))
+    ggplot(weekly, aes(x=factor(Week_Number), y=Present)) +
+      geom_col(aes(fill=Present>0), show.legend=FALSE) +
+      geom_text(aes(label=ifelse(Present>0, Present, "")), vjust=-0.5, size=3.2, color="#4a90d9") +
+      scale_fill_manual(values=c("FALSE"="#1e2d3d","TRUE"="#4a90d9")) +
+      scale_x_discrete(labels=paste0("W",1:15)) +
+      scale_y_continuous(expand=expansion(mult=c(0,0.15))) +
+      theme_minimal(base_size=12) +
+      theme(
+        panel.background=element_rect(fill="transparent",color=NA),
+        plot.background =element_rect(fill="transparent",color=NA),
+        axis.text       =element_text(color="#7a9bb5"),
+        axis.text.x     =element_text(size=9),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor  =element_blank()
+      ) +
+      labs(title=paste0("Weekly Attendance — ",nrow(sessions_df)," session(s)"),
+           x="Week", y="Students Present")
+  })
+
+  # ── K-Means clustering ───────────────────────────
+  output$engagement_cluster_plot <- renderPlot({
+    df <- load_analytics()
+    req(!is.null(df))
+    req("Engagement_Score" %in% colnames(df))
+    req(nrow(df) >= 3)
+    for (col in c("happy","neutral","focused","confused","sad")) {
+      if (!col %in% colnames(df)) df[[col]] <- 0
+      df[[col]] <- suppressWarnings(as.integer(df[[col]]))
+      df[[col]][is.na(df[[col]])] <- 0
+    }
+    cluster_df <- df %>%
+      group_by(Student_Name) %>%
+      summarise(
+        Avg_Engagement = mean(Engagement_Score, na.rm=TRUE),
+        Avg_Happy      = mean(happy,   na.rm=TRUE),
+        Avg_Sad        = mean(sad,     na.rm=TRUE)
+      ) %>%
+      filter(!is.na(Avg_Engagement))
+    req(nrow(cluster_df) >= 3)
+    set.seed(42)
+    k  <- min(3, nrow(cluster_df))
+    km <- kmeans(cluster_df[, c("Avg_Engagement","Avg_Happy","Avg_Sad")], centers=k)
+    cluster_df$Cluster <- factor(km$cluster, labels=c("Low","Medium","High")[1:k])
+    ggplot(cluster_df, aes(x=Avg_Engagement, y=Avg_Happy, color=Cluster, label=Student_Name)) +
+      geom_point(size=4, alpha=0.8) +
+      ggrepel::geom_text_repel(size=3, max.overlaps=10) +
+      scale_color_manual(values=c(Low="#e05555",Medium="#ffb432",High="#3ec97a")) +
+      theme_minimal(base_size=13) +
+      labs(title="Student Engagement Clusters (K-Means)",
+           x="Avg Engagement Score", y="Avg Happy Count", color="Cluster") +
+      theme(legend.position="bottom")
+  })
+
+  # ── Behavior plot ────────────────────────────────
+  output$behavior_plot <- renderPlot({
+    df <- load_analytics()
+    req(!is.null(df))
+    req(all(c("phone_usage","suspicious_activity") %in% colnames(df)))
+    beh_df <- df %>%
+      group_by(Session_ID) %>%
+      summarise(
+        Phone      = sum(phone_usage,         na.rm=TRUE),
+        Suspicious = sum(suspicious_activity, na.rm=TRUE)
+      ) %>%
+      tidyr::pivot_longer(cols=c(Phone,Suspicious), names_to="Behavior", values_to="Count")
+    ggplot(beh_df, aes(x=Session_ID, y=Count, fill=Behavior)) +
+      geom_bar(stat="identity", position="dodge") +
+      scale_fill_manual(values=c(Phone="#ffb432",Suspicious="#e05555")) +
+      theme_minimal(base_size=13) +
+      theme(axis.text.x=element_text(angle=45, hjust=1)) +
+      labs(title="Behavior Events Per Session", x="Session", y="Event Count", fill="Behavior")
+  })
+
   # ── Snapshots gallery ────────────────────────────
 
   # Populate session dropdown with this doctor's sessions
